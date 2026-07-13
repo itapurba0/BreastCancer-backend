@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+pydantic
+python-multipart
+pymongo
+pyjwt
+bcrypt
+qdrant-client
+fastembed
+openai
+requests
+python-dotenv
+pypdf
+beautifulsoup4
+pytest
+pytest-asyncio
+httpx

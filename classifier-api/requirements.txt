@@ -1,0 +1,14 @@
+tensorflow
+numpy
+scikit-learn
+Pillow
+python-multipart
+fastapi
+uvicorn
+pydantic
+pytest
+pytest-asyncio
+httpx
+opencv-python-headless
+requests
+python-dotenv
