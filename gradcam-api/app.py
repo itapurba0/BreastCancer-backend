@@ -1,4 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import os
 import uvicorn
 
@@ -7,7 +8,20 @@ import model_utils
 MODEL, IDX_TO_NAME, GRAD_MODEL, NESTED_NAME = model_utils.init_model()
 print(f"Model loaded: {MODEL is not None}")
 
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://breastcancer-model-snowy.vercel.app",
+]
+
 app = FastAPI(title="Grad-CAM API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
