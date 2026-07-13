@@ -27,7 +27,7 @@ origins = [
 
 CLIENT_URL = os.getenv("CLIENT_URL")
 if CLIENT_URL:
-    origins.append(f"https://{CLIENT_URL}")
+    origins.append(f"{CLIENT_URL}")
 
 app = FastAPI(title="Chatbot API", lifespan=lifespan)
 app.include_router(auth_router)
