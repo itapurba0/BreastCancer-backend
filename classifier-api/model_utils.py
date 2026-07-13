@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import base64
+import gc
 import cv2
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
@@ -65,16 +66,17 @@ def load_class_indices() -> Dict[int, str]:
     return {int(v): k for k, v in m.items()}
 
 
-def init_model() -> Tuple[Optional[object], Dict[int, str]]:
+def init_model() -> Tuple[Optional[object], Dict[int, str], Optional[object], Optional[str]]:
     model_path = find_model_in_classification_dir()
     if model_path is None or tf is None:
-        return None, {}
+        return None, {}, None, None
     try:
         model = tf.keras.models.load_model(model_path)
         idx_to_name = load_class_indices()
-        return model, idx_to_name
+        gradcam_model, nested_name = build_gradcam_model(model)
+        return model, idx_to_name, gradcam_model, nested_name
     except Exception:
-        return None, {}
+        return None, {}, None, None
 
 
 def preprocess_image_bytes(data: bytes):
@@ -82,19 +84,6 @@ def preprocess_image_bytes(data: bytes):
     img = img.resize(IMG_SIZE)
     arr = np.array(img, dtype=np.float32)
     return np.expand_dims(arr, axis=0)
-
-
-def predict_with_model(model, x) -> dict:
-    preds = model.predict(x)
-    probs = preds[0].tolist()
-    pred_idx = int(np.argmax(probs))
-    confidence = float(probs[pred_idx])
-    return {
-        "pred_idx": pred_idx,
-        "probs": probs,
-        "confidence": confidence,
-        "is_conclusive": confidence >= CONFIDENCE_THRESHOLD,
-    }
 
 
 def proxy_predict(file_bytes: bytes, filename: str, content_type: str, proxy_url: str) -> dict:
@@ -126,58 +115,49 @@ def get_last_conv_layer_info(model):
     raise ValueError("Could not find a convolutional layer in the model.")
 
 
-def make_gradcam_heatmap(img_array, model, pred_index):
-    if tf is None:
-        return None
-
+def build_gradcam_model(model):
     layer_name, nested_model_name = get_last_conv_layer_info(model)
-
     if nested_model_name:
         base_model = model.get_layer(nested_model_name)
-
-        grad_base_model = tf.keras.Model(
+        grad_model = tf.keras.Model(
             inputs=base_model.inputs,
             outputs=[base_model.get_layer(layer_name).output, base_model.output]
         )
+        return grad_model, nested_model_name
+    grad_model = tf.keras.Model(
+        inputs=model.inputs,
+        outputs=[model.get_layer(layer_name).output, model.output]
+    )
+    return grad_model, None
 
-        with tf.GradientTape() as tape:
-            outputs = grad_base_model(img_array)
-            conv_outputs, base_outputs = outputs[0], outputs[1]
 
-            if isinstance(conv_outputs, (list, tuple)): conv_outputs = conv_outputs[0]
-            if isinstance(base_outputs, (list, tuple)): base_outputs = base_outputs[0]
+def predict_with_gradcam(model, gradcam_model, x, nested_name=None):
+    with tf.GradientTape() as tape:
+        outputs = gradcam_model(x, training=False)
+        conv_outputs, model_outputs = outputs[0], outputs[1]
+        if isinstance(conv_outputs, (list, tuple)):
+            conv_outputs = conv_outputs[0]
+        if isinstance(model_outputs, (list, tuple)):
+            model_outputs = model_outputs[0]
 
+        if nested_name:
             tape.watch(conv_outputs)
-
-            x = base_outputs
-            found_base = False
+            base_outputs = model_outputs
+            x_out = base_outputs
+            found = False
             for layer in model.layers:
-                if layer.name == nested_model_name:
-                    found_base = True
+                if layer.name == nested_name:
+                    found = True
                     continue
-                if found_base:
+                if found:
                     try:
-                        x = layer(x, training=False)
+                        x_out = layer(x_out, training=False)
                     except TypeError:
-                        x = layer(x)
+                        x_out = layer(x_out)
+            model_outputs = x_out
 
-            preds = x
-            if isinstance(preds, (list, tuple)): preds = preds[0]
-            class_channel = preds[:, pred_index]
-    else:
-        grad_model = tf.keras.Model(
-            inputs=model.inputs,
-            outputs=[model.get_layer(layer_name).output, model.output]
-        )
-
-        with tf.GradientTape() as tape:
-            outputs = grad_model(img_array)
-            conv_outputs, preds = outputs[0], outputs[1]
-
-            if isinstance(conv_outputs, (list, tuple)): conv_outputs = conv_outputs[0]
-            if isinstance(preds, (list, tuple)): preds = preds[0]
-
-            class_channel = preds[:, pred_index]
+        pred_index = tf.argmax(model_outputs[0])
+        class_channel = model_outputs[:, pred_index]
 
     grads = tape.gradient(class_channel, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
@@ -185,13 +165,28 @@ def make_gradcam_heatmap(img_array, model, pred_index):
     conv_outputs = conv_outputs[0]
     heatmap = conv_outputs @ tf.expand_dims(pooled_grads, axis=-1)
     heatmap = tf.squeeze(heatmap)
-
     heatmap = tf.maximum(heatmap, 0)
     max_val = tf.math.reduce_max(heatmap)
     if max_val > 0:
         heatmap = heatmap / max_val
 
-    return heatmap.numpy()
+    probs = model_outputs[0].numpy().tolist()
+    pred_idx = int(np.argmax(probs))
+    confidence = float(probs[pred_idx])
+
+    result = {
+        "pred_idx": pred_idx,
+        "probs": probs,
+        "confidence": confidence,
+        "is_conclusive": confidence >= CONFIDENCE_THRESHOLD,
+    }
+
+    heatmap_np = heatmap.numpy()
+
+    del conv_outputs, grads, pooled_grads, heatmap, model_outputs
+    gc.collect()
+
+    return result, heatmap_np
 
 
 def generate_gradcam_base64(img_bytes: bytes, heatmap: np.ndarray) -> str:

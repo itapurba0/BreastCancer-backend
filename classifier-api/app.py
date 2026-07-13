@@ -18,8 +18,8 @@ from facilities import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global MODEL, IDX_TO_NAME
-    MODEL, IDX_TO_NAME = model_utils.init_model()
+    global MODEL, IDX_TO_NAME, GRAD_MODEL, NESTED_NAME
+    MODEL, IDX_TO_NAME, GRAD_MODEL, NESTED_NAME = model_utils.init_model()
     if MODEL is None:
         print("Model not loaded at startup (no TF/model found) — /predict will proxy to MODEL_PROXY_URL if available.")
     else:
@@ -47,6 +47,8 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(__file__)
 MODEL = None
 IDX_TO_NAME: Dict[int, str] = {}
+GRAD_MODEL = None
+NESTED_NAME = None
 
 
 @app.get("/")
@@ -64,7 +66,7 @@ async def predict(file: UploadFile = File(...)):
     if model_utils.tf is not None and MODEL is not None:
         try:
             x = model_utils.preprocess_image_bytes(data)
-            res = model_utils.predict_with_model(MODEL, x)
+            res, heatmap = model_utils.predict_with_gradcam(MODEL, GRAD_MODEL, x, NESTED_NAME)
             pred_idx = res["pred_idx"]
             probs = res["probs"]
             confidence = res["confidence"]
@@ -74,6 +76,9 @@ async def predict(file: UploadFile = File(...)):
 
             if not is_conclusive:
                 pred_name = "inconclusive"
+
+            gradcam_b64 = model_utils.generate_gradcam_base64(data, heatmap)
+            gradcam_data_uri = f"data:image/jpeg;base64,{gradcam_b64}"
 
             triage = generate_triage(
                 pred_name if pred_name != "inconclusive" else IDX_TO_NAME.get(res["pred_idx"], str(res["pred_idx"])),
@@ -86,6 +91,7 @@ async def predict(file: UploadFile = File(...)):
                 "predicted_idx": pred_idx,
                 "confidence": confidence,
                 "probabilities": name_prob,
+                "gradcam_image": gradcam_data_uri,
                 "inconclusive": not is_conclusive,
             }
             if triage:
@@ -115,8 +121,7 @@ async def gradcam(file: UploadFile = File(...)):
         raise HTTPException(status_code=503, detail="Model not available")
     try:
         x = model_utils.preprocess_image_bytes(data)
-        res = model_utils.predict_with_model(MODEL, x)
-        heatmap = model_utils.make_gradcam_heatmap(x, MODEL, res["pred_idx"])
+        res, heatmap = model_utils.predict_with_gradcam(MODEL, GRAD_MODEL, x, NESTED_NAME)
         gradcam_b64 = model_utils.generate_gradcam_base64(data, heatmap)
         return {"gradcam_image": f"data:image/jpeg;base64,{gradcam_b64}"}
     except Exception as e:
