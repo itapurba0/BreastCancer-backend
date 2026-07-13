@@ -3,8 +3,6 @@ import io
 import json
 import logging
 import base64
-import gc
-import cv2
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
@@ -66,17 +64,16 @@ def load_class_indices() -> Dict[int, str]:
     return {int(v): k for k, v in m.items()}
 
 
-def init_model() -> Tuple[Optional[object], Dict[int, str], Optional[object], Optional[str]]:
+def init_model() -> Tuple[Optional[object], Dict[int, str]]:
     model_path = find_model_in_classification_dir()
     if model_path is None or tf is None:
-        return None, {}, None, None
+        return None, {}
     try:
         model = tf.keras.models.load_model(model_path)
         idx_to_name = load_class_indices()
-        gradcam_model, nested_name = build_gradcam_model(model)
-        return model, idx_to_name, gradcam_model, nested_name
+        return model, idx_to_name
     except Exception:
-        return None, {}, None, None
+        return None, {}
 
 
 def preprocess_image_bytes(data: bytes):
@@ -86,124 +83,21 @@ def preprocess_image_bytes(data: bytes):
     return np.expand_dims(arr, axis=0)
 
 
-def proxy_predict(file_bytes: bytes, filename: str, content_type: str, proxy_url: str) -> dict:
-    files = {"file": (filename, file_bytes, content_type)}
-    resp = requests.post(proxy_url, files=files, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
-
-
-# --- GRAD-CAM FUNCTIONS ---
-
-def get_last_conv_layer_info(model):
-    for layer in reversed(model.layers):
-        if isinstance(layer, tf.keras.Model):
-            for inner_layer in reversed(layer.layers):
-                try:
-                    if hasattr(inner_layer, 'output') and len(inner_layer.output.shape) == 4:
-                        return inner_layer.name, layer.name
-                except Exception:
-                    continue
-
-    for layer in reversed(model.layers):
-        try:
-            if hasattr(layer, 'output') and len(layer.output.shape) == 4:
-                return layer.name, None
-        except Exception:
-            continue
-
-    raise ValueError("Could not find a convolutional layer in the model.")
-
-
-def build_gradcam_model(model):
-    layer_name, nested_model_name = get_last_conv_layer_info(model)
-    if nested_model_name:
-        base_model = model.get_layer(nested_model_name)
-        grad_model = tf.keras.Model(
-            inputs=base_model.inputs,
-            outputs=[base_model.get_layer(layer_name).output, base_model.output]
-        )
-        return grad_model, nested_model_name
-    grad_model = tf.keras.Model(
-        inputs=model.inputs,
-        outputs=[model.get_layer(layer_name).output, model.output]
-    )
-    return grad_model, None
-
-
-def predict_with_gradcam(model, gradcam_model, x, nested_name=None):
-    with tf.GradientTape() as tape:
-        outputs = gradcam_model(x, training=False)
-        conv_outputs, model_outputs = outputs[0], outputs[1]
-        if isinstance(conv_outputs, (list, tuple)):
-            conv_outputs = conv_outputs[0]
-        if isinstance(model_outputs, (list, tuple)):
-            model_outputs = model_outputs[0]
-
-        if nested_name:
-            tape.watch(conv_outputs)
-            base_outputs = model_outputs
-            x_out = base_outputs
-            found = False
-            for layer in model.layers:
-                if layer.name == nested_name:
-                    found = True
-                    continue
-                if found:
-                    try:
-                        x_out = layer(x_out, training=False)
-                    except TypeError:
-                        x_out = layer(x_out)
-            model_outputs = x_out
-
-        pred_index = tf.argmax(model_outputs[0])
-        class_channel = model_outputs[:, pred_index]
-
-    grads = tape.gradient(class_channel, conv_outputs)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-
-    conv_outputs = conv_outputs[0]
-    heatmap = conv_outputs @ tf.expand_dims(pooled_grads, axis=-1)
-    heatmap = tf.squeeze(heatmap)
-    heatmap = tf.maximum(heatmap, 0)
-    max_val = tf.math.reduce_max(heatmap)
-    if max_val > 0:
-        heatmap = heatmap / max_val
-
-    probs = model_outputs[0].numpy().tolist()
+def predict_with_model(model, x) -> dict:
+    preds = model.predict(x)
+    probs = preds[0].tolist()
     pred_idx = int(np.argmax(probs))
     confidence = float(probs[pred_idx])
-
-    result = {
+    return {
         "pred_idx": pred_idx,
         "probs": probs,
         "confidence": confidence,
         "is_conclusive": confidence >= CONFIDENCE_THRESHOLD,
     }
 
-    heatmap_np = heatmap.numpy()
 
-    del conv_outputs, grads, pooled_grads, heatmap, model_outputs
-    gc.collect()
-
-    return result, heatmap_np
-
-
-def generate_gradcam_base64(img_bytes: bytes, heatmap: np.ndarray) -> str:
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    img_arr = np.array(img)
-
-    heatmap_resized = cv2.resize(heatmap, (img_arr.shape[1], img_arr.shape[0]))
-
-    heatmap_uint8 = np.uint8(255 * heatmap_resized)
-    colormap = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
-    colormap = cv2.cvtColor(colormap, cv2.COLOR_BGR2RGB)
-
-    alpha = 0.5
-    superimposed = cv2.addWeighted(colormap, alpha, img_arr, 1 - alpha, 0)
-
-    out_img = Image.fromarray(superimposed)
-    buffer = io.BytesIO()
-    out_img.save(buffer, format="JPEG")
-
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+def proxy_predict(file_bytes: bytes, filename: str, content_type: str, proxy_url: str) -> dict:
+    files = {"file": (filename, file_bytes, content_type)}
+    resp = requests.post(proxy_url, files=files, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
