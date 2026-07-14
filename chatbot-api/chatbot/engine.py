@@ -1,6 +1,7 @@
 import os
 import time
 import warnings
+os.environ["FASTEMBED_CACHE_PATH"] = "/tmp"
 from qdrant_client import QdrantClient
 from fastembed import TextEmbedding  
 from openai import AsyncOpenAI
