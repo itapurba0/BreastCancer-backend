@@ -1,7 +1,9 @@
 import os
 import time
 import warnings
-os.environ["FASTEMBED_CACHE_PATH"] = "/tmp"
+os.environ["HF_HOME"] = "/tmp/hf_home"
+os.environ["HF_HUB_CACHE"] = "/tmp/hf_hub_cache"
+os.environ["FASTEMBED_CACHE_PATH"] = "/tmp/fastembed_cache"
 from qdrant_client import QdrantClient
 from fastembed import TextEmbedding  
 from openai import AsyncOpenAI
@@ -22,7 +24,7 @@ print("Loading lightweight embedding model...")
 # Initialize FastEmbed (Uses ONNX runtime instead of PyTorch)
 embed_model = TextEmbedding(
     model_name="BAAI/bge-small-en-v1.5", 
-    cache_dir="/tmp"
+    cache_dir="/tmp/fastembed_cache"
 )
 
 # Connect to Qdrant
