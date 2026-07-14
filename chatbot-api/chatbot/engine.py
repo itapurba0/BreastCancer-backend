@@ -19,7 +19,10 @@ warnings.filterwarnings("ignore", category=UserWarning, module="qdrant_client")
 
 print("Loading lightweight embedding model...")
 # Initialize FastEmbed (Uses ONNX runtime instead of PyTorch)
-embed_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+embed_model = TextEmbedding(
+    model_name="BAAI/bge-small-en-v1.5", 
+    cache_dir="/tmp"
+)
 
 # Connect to Qdrant
 try:
@@ -52,16 +55,15 @@ def retrieve_context(user_question: str, top_k: int = 1):
             with_payload=True
         )
 
-        print(f"⚡ Retrieval Time: {time.time()-start:.2f}s")
 
         context_chunks = []
         for hit in search_response.points:
             if hit.payload and "text" in hit.payload:
                 context_chunks.append(hit.payload["text"][:1200])
-        print(f"🔍 Retrieved {len(context_chunks)} chunks from Qdrant.")
+        
         return "\n\n---\n\n".join(context_chunks)
     except Exception as e:
-        print(f"\n❌ Retrieval Error: {e}")
+        print(f"❌ Qdrant Retrieval Error: {e}")
         return ""
 
 # Change the function to act as a generator
@@ -86,10 +88,8 @@ async def generate_rag_response(messages):
                 ai_memory.append({"role": getattr(msg, "role", "user"), "content": getattr(msg, "content", "")})
     # ------------------------------------
 
-    print(f"\n[1/2] Retrieving context for: '{latest_user_question}'...")
    
     context = retrieve_context(latest_user_question)
-    print(f"\n[Context Retrieved]:\n{context}\n")
     if not context.strip():
         yield "I'm sorry, but I don't have enough information in my current medical files to answer that safely."
         return
@@ -119,15 +119,14 @@ async def generate_rag_response(messages):
 
     ai_memory.insert(0, {"role": "system", "content": system_prompt})
 
-    print("\n[2/2] Generating response from AI...\n🤖 AI: ", end="", flush=True)
 
     try:
         # 4. NEW: Add 'await' so Python knows it can handle other users while OpenRouter thinks
         # Request the stream with strict consistency parameters
         stream = await ai_client.chat.completions.create(
-            model="openai/gpt-oss-120b:free", # 1. Force a specific model instead of openrouter/free
+            model="nvidia/nemotron-3-super-120b-a12b:free", # 1. Force a specific model instead of openrouter/free
             messages=ai_memory,
-            temperature=0.3, # 2. NEW: Drops randomness to absolute zero
+            temperature=0.0, 
             stream=True
         )
 
