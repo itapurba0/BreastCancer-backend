@@ -1,18 +1,14 @@
 {
-  "builds": [
-    {
-      "src": "app.py",
-      "use": "@vercel/python"
-    }
-  ],
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "app.py"
+      "dest": "api/app.py"
     }
   ],
   "functions": {
-    "app.py": {
+    "api/app.py": {
       "maxDuration": 60,
       "memory": 3008
     }
